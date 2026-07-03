@@ -321,7 +321,7 @@ namespace Vdfs {
 
 	struct InoItem {
 		std::string path;
-		MyInode inode;
+		uint64_t inode_id;
 	};
     
 }

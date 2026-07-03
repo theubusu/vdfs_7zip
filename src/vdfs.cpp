@@ -14,11 +14,13 @@
 #include <CPP/7zip/Common/RegisterArc.h>
 #include <CPP/7zip/Common/StreamObjects.h>
 #include <CPP/7zip/Common/StreamUtils.h>
+#include <CPP/Windows/TimeUtils.h>
 
 #include <CPP/7zip/Compress/CopyCoder.h>
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <memory>
 
 namespace Vdfs {
     
@@ -35,7 +37,7 @@ namespace Vdfs {
 
         using Child = std::pair<std::string, uint64_t>;
         
-        std::unordered_map<uint64_t, MyInode> _inodes;
+        std::unordered_map<uint64_t, std::unique_ptr<MyInode>> _inodes;
         std::unordered_map<uint64_t, std::vector<Child>> _cat_tree;
 
         CObjectVector<InoItem> _items;
@@ -56,11 +58,11 @@ namespace Vdfs {
         kpidIsDir,
         kpidSize,
         kpidPackSize,
+        kpidMTime,      //modification_time
+        kpidCTime,      //creation_time
+        kpidATime,      //access_time
         kpidGroupId,    //gid
         kpidUserId,     //uid
-        kpidCTime,      //creation_time
-        kpidMTime,      //modification_time
-        kpidATime,      //access_time
     };
     IMP_IInArchive_Props;
 
@@ -208,7 +210,7 @@ namespace Vdfs {
                             ino.kind = c_key.record_type;
                             ino.folder_record = folder_record;
 
-                            _inodes[c_key.object_id] = ino;
+                            _inodes[c_key.object_id] = std::make_unique<MyInode>(ino);
 
                         } else if (c_key.record_type == VDFS4_CATALOG_FILE_RECORD) {
                             vdfs4_catalog_file_record file_record;
@@ -223,7 +225,7 @@ namespace Vdfs {
                             ino.kind = c_key.record_type;
                             ino.file_record = file_record;
 
-                            _inodes[c_key.object_id] = ino;
+                            _inodes[c_key.object_id] = std::make_unique<MyInode>(ino);
                         }
                     }
 
@@ -272,21 +274,21 @@ namespace Vdfs {
     void CHandler::run_dir(uint64_t id, const std::string &path) {
         auto &inode = _inodes.at(id);
         auto it = _cat_tree.find(id);
-        if (it == _cat_tree.end())
+        if (it == _cat_tree.end()) {
             return;
+        }
 
         for (auto &child : it->second) {
             const std::string &name = child.first;
             uint64_t child_id = child.second;
-
             std::string new_path = path.empty() ? name : path + "/" + name;
 
             //DBG_LOG("%s\n", new_path.c_str());
 
-            auto &child_inode = _inodes.at(child_id);
+            auto &child_inode = *_inodes.at(child_id);
             InoItem item;
             item.path = new_path;
-            item.inode = child_inode;
+            item.inode_id = child_id;
             _items.Add(item);
 
             if (child_inode.kind == VDFS4_CATALOG_FOLDER_RECORD) {
@@ -335,20 +337,45 @@ namespace Vdfs {
         COM_TRY_BEGIN
         NWindows::NCOM::CPropVariant prop;
         const InoItem& item = _items[index];
+        const MyInode& inode = *_inodes.at(item.inode_id);
         AString itemPath(item.path.c_str());
+        const auto& common =
+            (inode.kind == VDFS4_CATALOG_FILE_RECORD)
+            ? inode.file_record.common
+            : inode.folder_record;
 
         switch (propID) {
             case kpidPath:  
                 Utf8StringToProp(itemPath, prop);
                 break;
             case kpidIsDir:
-                prop = (item.inode.kind == VDFS4_CATALOG_FOLDER_RECORD);
+                prop = (inode.kind == VDFS4_CATALOG_FOLDER_RECORD);
                 break;
-            case kpidSize:
-                prop = (item.inode.kind == VDFS4_CATALOG_FILE_RECORD)
-                   ? item.inode.file_record.data_fork.size_in_bytes
+            case kpidPackSize:
+                prop = (inode.kind == VDFS4_CATALOG_FILE_RECORD)
+                   ? inode.file_record.data_fork.size_in_bytes
                    : 0; 
                 break;
+            case kpidGroupId:
+                prop = (inode.kind == VDFS4_CATALOG_FILE_RECORD)
+                    ? inode.file_record.common.gid
+                    : inode.folder_record.gid;
+                break;
+            case kpidUserId:
+                prop = (inode.kind == VDFS4_CATALOG_FILE_RECORD)
+                    ? inode.file_record.common.uid
+                    : inode.folder_record.uid;
+                break;
+            case kpidMTime:
+                PropVariant_SetFrom_UnixTime(prop, common.modification_time.seconds);
+                break;
+            case kpidCTime:
+                PropVariant_SetFrom_UnixTime(prop, common.creation_time.seconds);
+                break;
+            case kpidATime:
+                PropVariant_SetFrom_UnixTime(prop, common.access_time.seconds);
+                break;
+
         }
         prop.Detach(value);
         return S_OK;
@@ -363,7 +390,7 @@ namespace Vdfs {
     
     Z7_COM7F_IMF(CHandler::GetFileTimeType(UInt32* type)) {
 
-        *type = k_PropVar_TimePrec_0;
+        *type = k_PropVar_TimePrec_Unix;
         return S_OK;
     }
 

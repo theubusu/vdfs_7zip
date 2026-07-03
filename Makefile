@@ -1,4 +1,4 @@
-CODE=src/*.cpp
+CODE=src/*.cpp include/7zip/CPP/Windows/TimeUtils.cpp
 INCLUDE=-lOleAut32 -lUser32 -Iinclude/7zip
 DEFINE=-D_CRT_SECURE_NO_WARNINGS
 OUTDIR=bin

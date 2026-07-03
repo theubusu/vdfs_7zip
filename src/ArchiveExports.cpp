@@ -26,6 +26,7 @@
 #include <CPP/Common/StringConvert.cpp>
 #include <CPP/Common/UTFConvert.cpp>
 #include <CPP/Windows/PropVariant.cpp>
+#include <CPP/Windows/TimeUtils.h>
 
 static const unsigned kNumArcsMax = 72;
 static unsigned g_NumArcs = 0;
