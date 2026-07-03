@@ -309,6 +309,19 @@ namespace Vdfs {
 		struct vdfs4_fork data_fork;
     };
 
+	/** The VDFS4 inode flags */
+	#define HAS_BLOCKS_IN_EXTTREE	(1 << 1)
+	#define VDFS4_IMMUTABLE		(1 << 2)
+	#define HARD_LINK		(1 << 10)
+	#define ORPHAN_INODE		(1 << 12)
+	#define VDFS4_COMPRESSED_FILE	(1 << 13)
+	/* UNUSED:			 			14 */
+	#define VDFS4_AUTH_FILE		(1 << 15)
+	#define VDFS4_READ_ONLY_AUTH	(1 << 16)
+	#define VDFS4_ENCRYPTED_FILE	(1 << 17)
+	#define VDFS4_PROFILED_FILE	(1 << 18)
+	#define VDFS4_INLINE_DATA_FILE	(1 << 19)
+	#define VDFS4_COMP_INLINE_DATA_FILE	(1 << 20)
 
 	///////
 
@@ -323,5 +336,6 @@ namespace Vdfs {
 		std::string path;
 		uint64_t inode_id;
 	};
+
     
 }

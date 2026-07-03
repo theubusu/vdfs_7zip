@@ -57,7 +57,6 @@ namespace Vdfs {
         kpidPath,
         kpidIsDir,
         kpidSize,
-        kpidPackSize,
         kpidMTime,      //modification_time
         kpidCTime,      //creation_time
         kpidATime,      //access_time
@@ -307,6 +306,111 @@ namespace Vdfs {
     Z7_COM7F_IMF(CHandler::Extract(const UInt32* indices, UInt32 numItems, Int32 testMode, IArchiveExtractCallback* extractCallback)) {
 
         COM_TRY_BEGIN
+
+        const bool allFilesMode = (numItems == (UInt32)(Int32)-1);
+        if (allFilesMode) {
+            numItems = _items.Size();
+        }
+
+        if (numItems == 0) {
+            return S_OK;
+        }
+
+        UInt64 total_size = 0;
+        for (UInt32 i = 0; i < numItems; i++) {
+            const InoItem& item = _items[allFilesMode ? i : indices[i]];
+            const MyInode& inode = *_inodes.at(item.inode_id);
+
+            if (!(inode.kind == VDFS4_CATALOG_FILE_RECORD)) {
+                continue;
+            }
+
+            const auto& fr = inode.file_record;
+            total_size += fr.data_fork.size_in_bytes;
+        }
+
+        extractCallback->SetTotal(total_size);
+        UInt64 currentTotal = 0;
+
+        for (UInt32 i = 0; i < numItems; i++) {
+            const UInt32 index = allFilesMode ? i : indices[i];
+            const InoItem& item = _items[index];
+            const MyInode& inode = *_inodes.at(item.inode_id);
+
+            const bool is_dir = (inode.kind == VDFS4_CATALOG_FOLDER_RECORD);
+
+            CMyComPtr<ISequentialOutStream> outStream;
+            const Int32 askMode = testMode
+                ? NArchive::NExtract::NAskMode::kTest
+                : NArchive::NExtract::NAskMode::kExtract;
+
+            RINOK(extractCallback->GetStream(index, &outStream, askMode));
+            RINOK(extractCallback->PrepareOperation(askMode));
+
+            //no real test now
+            if (!testMode && !outStream) {
+                continue;
+            }
+            if (testMode) {
+                extractCallback->SetOperationResult(NArchive::NExtract::NOperationResult::kOK);
+                continue;
+            }
+
+            UInt64 written_total = 0;
+            bool ok = true;
+
+            if (is_dir) {
+                extractCallback->SetOperationResult(NArchive::NExtract::NOperationResult::kOK);
+                continue;
+            }
+
+            const auto& fr = inode.file_record;
+            const UInt64 file_size = fr.data_fork.size_in_bytes;
+            UInt64 remain = file_size;
+
+            // INLINE FILE
+            if (fr.common.flags & VDFS4_INLINE_DATA_FILE){
+                const Byte* data = fr.data_fork.inline_data;
+                RINOK(WriteStream(outStream, data, (size_t)file_size));
+                written_total = file_size;
+
+            } else {
+                for (const auto& ext : fr.data_fork.extents) {
+                    if (ext.extent.length == 0) {
+                        break;
+                    }
+
+                    UInt64 offset = ext.extent.begin * _block_size;
+                    UInt64 to_read = ext.extent.length * _block_size;
+                    if (to_read > remain) {
+                        to_read = remain;
+                    }
+                    if (to_read == 0) {
+                        break;
+                    }
+
+                    RINOK(InStream_SeekSet(_inStream, offset));
+                    std::vector<Byte> buf((size_t)to_read);
+
+                    RINOK(ReadStream_FALSE(_inStream, buf.data(), (UInt32)to_read));
+
+                    UInt32 written = 0;
+                    RINOK(outStream->Write(buf.data(), buf.size(), &written));
+
+                    written_total += written;
+                    if (written != buf.size()) {
+                        ok = false;
+                    }
+                    remain -= written;
+                }
+
+            }
+            currentTotal += file_size;
+            RINOK(extractCallback->SetOperationResult(
+                ok ? NArchive::NExtract::NOperationResult::kOK
+                    : NArchive::NExtract::NOperationResult::kDataError));
+        }
+
         return S_OK;
         COM_TRY_END
     }
@@ -351,20 +455,16 @@ namespace Vdfs {
             case kpidIsDir:
                 prop = (inode.kind == VDFS4_CATALOG_FOLDER_RECORD);
                 break;
-            case kpidPackSize:
+            case kpidSize:
                 prop = (inode.kind == VDFS4_CATALOG_FILE_RECORD)
                    ? inode.file_record.data_fork.size_in_bytes
                    : 0; 
                 break;
             case kpidGroupId:
-                prop = (inode.kind == VDFS4_CATALOG_FILE_RECORD)
-                    ? inode.file_record.common.gid
-                    : inode.folder_record.gid;
+                prop = common.gid;
                 break;
             case kpidUserId:
-                prop = (inode.kind == VDFS4_CATALOG_FILE_RECORD)
-                    ? inode.file_record.common.uid
-                    : inode.folder_record.uid;
+                prop = common.uid;
                 break;
             case kpidMTime:
                 PropVariant_SetFrom_UnixTime(prop, common.modification_time.seconds);
