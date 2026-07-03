@@ -28,11 +28,12 @@ namespace Vdfs {
     #if FMTFIX
     {
     #endif
+        UInt64 _file_size;
         vdfs4_volume_begins _vb;
         vdfs4_super_block _sb;
         vdfs4_extended_super_block _exsb;
         UInt64 _block_size;
-
+        
         CMyComPtr<IInStream> _inStream;
 
         using Child = std::pair<std::string, uint64_t>;
@@ -92,8 +93,10 @@ namespace Vdfs {
     }
 
     HRESULT CHandler::Open2(IInStream* stream) {
-        Byte w_buf[0x1000];
+        InStream_GetSize_SeekToBegin(stream, _file_size);
 
+        //common buf
+        Byte w_buf[0x1000];
 
         //volume begins block    
         RINOK(ReadStream_FALSE(stream, w_buf, sizeof(vdfs4_volume_begins)));
@@ -143,6 +146,10 @@ namespace Vdfs {
         while (true) {
             UInt64 pos = 0;
             RINOK(InStream_GetPos(stream, pos));
+            if (pos >= _file_size) {
+                //EOF
+                break;
+            }
             UInt64 btables_block = (pos - btrees_offset)/_block_size;
             if (btables_block == _exsb.meta[0].length) {
                 DBG_LOG("Reach end of btrees (block %llu)\n", btables_block);
