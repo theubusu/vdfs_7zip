@@ -1,7 +1,14 @@
 # VDFS 7zip
-This is a basic read-only implementation of Samsung's VDFS (Vertically Deliberate improved performance File System), used in their Tizen TVs as a 7zip plugin.   
+This is a basic implementation of Samsung's VDFS (Vertically Deliberate improved performance File System), used in their Tizen TVs as a 7zip plugin.   
 It is based on the samsung released GPL source of VDFS. This plugin is also licensed under GPL.   
-NOTE: the plugin will almost certainly only work on "CLEAN" images, as in, not ever written to, or read-only. Right now only tested on the 2007 layout (latest).   
+ 
+# Notes
+This is not a full implementation of the filesystem, and does NOT guarantee the integrity of the data or the filesystem structure. 
+- right now only tested on the 2007 layout (latest)
+- the plugin will almost certainly only work on "CLEAN" images, as in, not ever written to, or read-only
+- only zlib compression is supported    
+- encryption and signing is not implemented   
+- no checksums or hashes are verified   
 
 # Installation (Windows)
 - Built with `make` command  

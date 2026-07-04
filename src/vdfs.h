@@ -335,7 +335,50 @@ namespace Vdfs {
 	struct InoItem {
 		std::string path;
 		uint64_t inode_id;
+
+		//store uncompressed size of compressed items here.
+		UInt64 unpacked_size;
 	};
 
+	struct vdfs4_comp_extent {
+		char magic[2];
+		UInt16 flags;
+		UInt32 len_bytes;
+		UInt64 start;
+	};
+
+	#define VDFS4_AES_NONCE_SIZE			8
+
+	struct vdfs4_comp_file_descr {
+		/* new fields are added before magic for easier backward compatibility */
+		uint8_t reserved[7];
+		uint8_t sign_type;
+		/* from here same as layout 0x0005 */
+		char magic[4];
+		UInt16 extents_num;
+		UInt16 layout_version;
+		UInt64 unpacked_size;
+		UInt32 crc;
+		UInt32 log_chunk_size;
+		uint8_t aes_nonce[VDFS4_AES_NONCE_SIZE];
+	};
+
+	#define VDFS4_COMPR_DESCR_START			'C'
+	#define VDFS4_MD5_AUTH				'I'
+	#define VDFS4_SHA1_AUTH				'H'
+	#define VDFS4_SHA256_AUTH			'h'
+
+	#define VDFS4_MD5_HASH_LEN			16
+	#define VDFS4_SHA1_HASH_LEN			20
+	#define VDFS4_SHA256_HASH_LEN			32
+	#define VDFS4_RSA1024_SIGN_LEN			128
+	#define VDFS4_RSA2048_SIGN_LEN			256
+
+	#define VDFS4_COMPR_ZIP_FILE_DESCR_MAGIC	"Zip"
+	#define VDFS4_COMPR_GZIP_FILE_DESCR_MAGIC	"Gzp"
+	#define VDFS4_COMPR_LZO_FILE_DESCR_MAGIC	"Lzo"
+	#define VDFS4_COMPR_ZSTD_FILE_DESCR_MAGIC	"Zst"
+
+	#define COPY_BLOCK_SIZE 131072
     
 }

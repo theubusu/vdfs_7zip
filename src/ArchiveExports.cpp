@@ -80,22 +80,22 @@ static int FindFormatCalssId(const GUID* clsid)
 
 extern "C" {
     __declspec(dllexport) HRESULT GetModuleProp(PROPID propID, PROPVARIANT* value) {
-        DBG_LOG("GetModuleProp (propID=%lu)\n", propID);
+        //DBG_LOG("GetModuleProp (propID=%lu)\n", propID);
         return 0;
     }
 
     __declspec(dllexport) HRESULT CreateDecoder(UInt32 index, const GUID* iid, void** outObject) {
-        DBG_LOG("CreateDecoder (index=%u)\n", index);
+        //DBG_LOG("CreateDecoder (index=%u)\n", index);
         return 0;
     }
 
     __declspec(dllexport) HRESULT CreateEncoder(UInt32 index, const GUID* iid, void** outObject) {
-        DBG_LOG("CreateEncoder (index=%u)\n", index);
+        //DBG_LOG("CreateEncoder (index=%u)\n", index);
         return 0;
     }
 
     __declspec(dllexport) HRESULT WINAPI CreateArchiver(const GUID* clsid, const GUID* iid, void** outObject) {
-        DBG_LOG("CreateArchiver\n");
+        //DBG_LOG("CreateArchiver\n");
 
         COM_TRY_BEGIN
         {
@@ -123,13 +123,13 @@ extern "C" {
     }
 
     __declspec(dllexport) HRESULT WINAPI CreateObject(const GUID* clsid, const GUID* iid, void** outObject) {
-        DBG_LOG("CreateObject\n");
+        //DBG_LOG("CreateObject\n");
         return CreateArchiver(clsid, iid, outObject);
         return 0;
     }
 
     __declspec(dllexport) HRESULT WINAPI GetHandlerProperty2(UInt32 formatIndex, PROPID propID, PROPVARIANT* value) {
-        DBG_LOG("GetHandlerProperty2 (formatIndex=%d, propID=%lu)\n", formatIndex, propID);
+        //DBG_LOG("GetHandlerProperty2 (formatIndex=%d, propID=%lu)\n", formatIndex, propID);
 
         COM_TRY_BEGIN
         NWindows::NCOM::PropVariant_Clear(value);
@@ -172,13 +172,13 @@ extern "C" {
     }
 
     __declspec(dllexport) HRESULT GetHandlerProperty(PROPID propID, PROPVARIANT* value) {
-        DBG_LOG("GetHandlerProperty (propId=%lu)\n", propID);
+        //DBG_LOG("GetHandlerProperty (propId=%lu)\n", propID);
 
         return GetHandlerProperty2(g_DefaultArcIndex, propID, value);
     }
 
     __declspec(dllexport) HRESULT WINAPI GetIsArc(UInt32 formatIndex, Func_IsArc* isArc) {
-        DBG_LOG("GetIsArc (formatIndex=%u)\n", formatIndex);
+        //DBG_LOG("GetIsArc (formatIndex=%u)\n", formatIndex);
 
         *isArc = NULL;
         if (formatIndex >= g_NumArcs)
@@ -189,7 +189,7 @@ extern "C" {
     }
 
     __declspec(dllexport) HRESULT WINAPI GetNumberOfFormats(UInt32* numFormats) {
-        DBG_LOG("GetNumberOfFormats\n");
+        //DBG_LOG("GetNumberOfFormats\n");
 
         *numFormats = g_NumArcs;
         return S_OK;

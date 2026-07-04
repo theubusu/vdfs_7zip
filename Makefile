@@ -1,4 +1,8 @@
-CODE=src/*.cpp include/7zip/CPP/Windows/TimeUtils.cpp
+CODE=src/*.cpp 
+CODE+=include/7zip/CPP/Windows/TimeUtils.cpp
+# for zlib
+CODE+=include/7zip/CPP/7zip/Compress/ZlibDecoder.cpp include/7zip/CPP/7zip/Compress/DeflateDecoder.cpp include/7zip/CPP/7zip/Common/InBuffer.cpp include/7zip/CPP/7zip/Common/OutBuffer.cpp include/7zip/CPP/7zip/Compress/BitlDecoder.cpp include/7zip/CPP/7zip/Compress/LzOutWindow.cpp
+
 INCLUDE=-lOleAut32 -lUser32 -Iinclude/7zip
 DEFINE=-D_CRT_SECURE_NO_WARNINGS
 OUTDIR=bin

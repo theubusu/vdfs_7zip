@@ -17,6 +17,7 @@
 #include <CPP/Windows/TimeUtils.h>
 
 #include <CPP/7zip/Compress/CopyCoder.h>
+#include <CPP/7zip/Compress/ZlibDecoder.h>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -43,8 +44,12 @@ namespace Vdfs {
 
         CObjectVector<InoItem> _items;
 
+        NCompress::NZlib::CDecoder *_zlibDecoderSpec;
+        CMyComPtr<ICompressCoder> _zlibDecoder;
+
         HRESULT Open2(IInStream* stream);
-        void run_dir(uint64_t id, const std::string &path);
+        void run_dir(uint64_t id, const std::string &path, IInStream *stream);
+        HRESULT GetUnpackedSize(IInStream *stream, const vdfs4_catalog_file_record &fr, UInt64 &unpackedSize);
     };
 
     // specifies the avaliable properties of the archive itself
@@ -58,6 +63,7 @@ namespace Vdfs {
         kpidPath,
         kpidIsDir,
         kpidSize,
+        kpidPackSize,
         kpidMTime,      //modification_time
         kpidCTime,      //creation_time
         kpidATime,      //access_time
@@ -262,7 +268,7 @@ namespace Vdfs {
         }
 
         std::string path_str; 
-        run_dir(1, path_str);
+        run_dir(1, path_str, stream);
 
         
         /*
@@ -277,7 +283,9 @@ namespace Vdfs {
         return S_OK;
     }
 
-    void CHandler::run_dir(uint64_t id, const std::string &path) {
+    
+
+    void CHandler::run_dir(uint64_t id, const std::string &path, IInStream *stream) {
         auto &inode = _inodes.at(id);
         auto it = _cat_tree.find(id);
         if (it == _cat_tree.end()) {
@@ -289,18 +297,47 @@ namespace Vdfs {
             uint64_t child_id = child.second;
             std::string new_path = path.empty() ? name : path + "/" + name;
 
-            //DBG_LOG("%s\n", new_path.c_str());
+            DBG_LOG("%s\n", new_path.c_str());
 
             auto &child_inode = *_inodes.at(child_id);
             InoItem item;
             item.path = new_path;
             item.inode_id = child_id;
+
+            //check on the file uncompressed size here 
+            if (child_inode.kind == VDFS4_CATALOG_FILE_RECORD && (child_inode.file_record.common.flags & VDFS4_COMPRESSED_FILE)) {
+                UInt64 unpackedSize = 0;
+                if (GetUnpackedSize(stream, child_inode.file_record, unpackedSize) == S_OK) {
+                    DBG_LOG("%s unpacked_size=%llu\n", new_path.c_str(), unpackedSize);
+                    item.unpacked_size = unpackedSize;
+                } else {
+                    DBG_LOG("%s unpacked_size FAIL!\n", new_path.c_str());
+                    item.unpacked_size = 0;
+                }
+            }
+
             _items.Add(item);
 
             if (child_inode.kind == VDFS4_CATALOG_FOLDER_RECORD) {
-                run_dir(child_id, new_path);
+                run_dir(child_id, new_path, stream);
             }
         }
+    }
+
+    HRESULT CHandler::GetUnpackedSize(IInStream *stream, const vdfs4_catalog_file_record &fr, UInt64 &unpackedSize) {
+        if (fr.data_fork.extents[0].extent.length == 0) {return E_FAIL;}
+        
+        UInt64 data_offset = fr.data_fork.extents[0].extent.begin * _block_size;
+
+        //read ONLY the unpacked_size field
+        UInt64 field_offset = data_offset + fr.data_fork.size_in_bytes - sizeof(vdfs4_comp_file_descr) + offsetof(vdfs4_comp_file_descr, unpacked_size);
+        RINOK(InStream_SeekSet(stream, field_offset));
+
+        Byte w_buf[sizeof(UInt64)];
+        RINOK(ReadStream_FALSE(stream, w_buf, sizeof(UInt64)));
+        memcpy(&unpackedSize, w_buf, sizeof(UInt64));
+
+        return S_OK;
     }
 
     Z7_COM7F_IMF(CHandler::Close()) {
@@ -318,7 +355,6 @@ namespace Vdfs {
         if (allFilesMode) {
             numItems = _items.Size();
         }
-
         if (numItems == 0) {
             return S_OK;
         }
@@ -327,13 +363,15 @@ namespace Vdfs {
         for (UInt32 i = 0; i < numItems; i++) {
             const InoItem& item = _items[allFilesMode ? i : indices[i]];
             const MyInode& inode = *_inodes.at(item.inode_id);
-
             if (!(inode.kind == VDFS4_CATALOG_FILE_RECORD)) {
                 continue;
             }
-
             const auto& fr = inode.file_record;
-            total_size += fr.data_fork.size_in_bytes;
+            if (fr.common.flags & VDFS4_COMPRESSED_FILE) {
+                total_size += item.unpacked_size;
+            } else {
+                total_size += fr.data_fork.size_in_bytes;
+            }
         }
 
         extractCallback->SetTotal(total_size);
@@ -343,7 +381,6 @@ namespace Vdfs {
             const UInt32 index = allFilesMode ? i : indices[i];
             const InoItem& item = _items[index];
             const MyInode& inode = *_inodes.at(item.inode_id);
-
             const bool is_dir = (inode.kind == VDFS4_CATALOG_FOLDER_RECORD);
 
             CMyComPtr<ISequentialOutStream> outStream;
@@ -363,25 +400,144 @@ namespace Vdfs {
                 continue;
             }
 
-            UInt64 written_total = 0;
-            bool ok = true;
-
-            if (is_dir) {
+            if (!outStream || is_dir) {
                 extractCallback->SetOperationResult(NArchive::NExtract::NOperationResult::kOK);
                 continue;
             }
 
             const auto& fr = inode.file_record;
-            const UInt64 file_size = fr.data_fork.size_in_bytes;
-            UInt64 remain = file_size;
+            bool ok = true;
+            HRESULT hr = S_OK;
 
             // INLINE FILE
             if (fr.common.flags & VDFS4_INLINE_DATA_FILE){
                 const Byte* data = fr.data_fork.inline_data;
-                RINOK(WriteStream(outStream, data, (size_t)file_size));
-                written_total = file_size;
+                const UInt64 file_size = fr.data_fork.size_in_bytes;
+                hr = WriteStream(outStream, data, (size_t)file_size);
+                if (hr == S_OK) {
+                    currentTotal += file_size;
+                    RINOK(extractCallback->SetCompleted(&currentTotal));
+                }
+
+            // COMPRESSED FILE
+            } else if (fr.common.flags & VDFS4_COMPRESSED_FILE) {   
+                UInt64 data_offset = fr.data_fork.extents[0].extent.begin * _block_size;    //i assume compressed files cannot have multiple extents
+                //start of comp descr
+                UInt64 descr_offset = data_offset + fr.data_fork.size_in_bytes - sizeof(vdfs4_comp_file_descr);
+                RINOK(InStream_SeekSet(_inStream, descr_offset));
+
+                Byte w_buf[0x1000];
+                vdfs4_comp_file_descr comp_descr;
+                RINOK(ReadStream_FALSE(_inStream, w_buf, sizeof(vdfs4_comp_file_descr)));
+                memcpy(&comp_descr, w_buf, sizeof(vdfs4_comp_file_descr));
+
+                DBG_LOG("comp_descr - magic=%.4s, extents_num=%i, layout_version=%i, unpacked_size=%llu, log_chunk_size=%i\n", 
+                        comp_descr.magic, comp_descr.extents_num, comp_descr.layout_version, comp_descr.unpacked_size, comp_descr.log_chunk_size);
+
+                UInt32 chunk_size = 1 << comp_descr.log_chunk_size;
+                    
+                //only zlib is supported
+                if (memcmp(comp_descr.magic +1, VDFS4_COMPR_ZIP_FILE_DESCR_MAGIC, 3) != 0) {
+                    return S_FALSE;
+                }
+
+                int hash_len;
+                switch (comp_descr.magic[0]) {
+                    case VDFS4_COMPR_DESCR_START:
+                        hash_len = 0;
+                        break;
+                    case VDFS4_MD5_AUTH:
+                        hash_len = VDFS4_MD5_HASH_LEN;
+                        break;
+                    case VDFS4_SHA1_AUTH:
+                        hash_len = VDFS4_SHA1_HASH_LEN;
+                        break;
+                    case VDFS4_SHA256_AUTH:
+                        hash_len = VDFS4_SHA256_HASH_LEN;
+                        break;
+                    default:
+                        return S_FALSE;
+                } 
+                DBG_LOG("hash_len=%i\n", hash_len);
+                
+                //sign len
+                int sign_len;
+                switch (comp_descr.sign_type) {
+                    case 0x0:   //VDFS4_SIGN_NONE
+                        sign_len = 0;
+                        break;
+                    case 0x1:   //VDFS4_SIGN_RSA1024
+                        sign_len = VDFS4_RSA1024_SIGN_LEN;
+                        break;
+                    case 0x2:   //VDFS4_SIGN_RSA2048
+                        sign_len = VDFS4_RSA2048_SIGN_LEN;
+                        break;
+                    default:
+                        return S_FALSE;
+                }
+                DBG_LOG("sign_len=%i\n", sign_len);
+
+                //start of extents, each extent has hash +1 for descriptor
+                UInt64 extents_start_off = descr_offset - sign_len - ((comp_descr.extents_num +1)* hash_len) - (comp_descr.extents_num * sizeof(vdfs4_comp_extent));
+                DBG_LOG("extents_start_off=%llu\n", extents_start_off);
+                RINOK(InStream_SeekSet(_inStream, extents_start_off));
+
+                //read extents
+                CObjectVector<vdfs4_comp_extent> extents;
+                for (UInt32 e = 0; e < comp_descr.extents_num; e++) {
+                    vdfs4_comp_extent extent;
+                    RINOK(ReadStream_FALSE(_inStream, w_buf, sizeof(vdfs4_comp_extent)));
+                    memcpy(&extent, w_buf, sizeof(vdfs4_comp_extent));
+                    DBG_LOG("extent[%i] - magic=%.2s, flags=%i, len_bytes=%i, start=%llu\n", e, extent.magic, extent.flags, extent.len_bytes, extent.start);
+                    extents.Add(extent);
+                }
+
+                //read extents data, decompress
+                if (!_zlibDecoder) {    //init decoder if not inited
+                    _zlibDecoderSpec = new NCompress::NZlib::CDecoder();
+                    _zlibDecoder = _zlibDecoderSpec;
+                }
+
+                for (UInt32 x = 0; x < comp_descr.extents_num; x++) {
+                    vdfs4_comp_extent extent = extents[x];
+                    DBG_LOG("(2)extent[%i] - magic=%.2s, flags=%i, len_bytes=%i, start=%llu\n", x, extent.magic, extent.flags, extent.len_bytes, extent.start);
+
+                    UInt64 offset = data_offset + extent.start;
+                    RINOK(InStream_SeekSet(_inStream, offset));
+
+                    if (extent.flags == 0) {
+                        //decompress zlib directly from in to out stream
+                        UInt64 inSize = (UInt64)extent.len_bytes;
+                        RINOK(_zlibDecoder->Code(_inStream, outStream, &inSize, NULL, NULL))
+
+                    } else {    //uncompressed
+                        std::vector<Byte> buf(extent.len_bytes);
+                        RINOK(ReadStream_FALSE(_inStream, buf.data(), extent.len_bytes));
+
+                        UInt32 written = 0;
+                        RINOK(outStream->Write(buf.data(), extent.len_bytes, &written));
+                        if (written != extent.len_bytes) {
+                            return S_FALSE; //did not write all data
+                        }
+                    }
+
+                    if (x == comp_descr.extents_num -1) {   //last chunk
+                        UInt64 last_chunk_size = comp_descr.unpacked_size % chunk_size;
+                        if (last_chunk_size == 0) {
+                            currentTotal += chunk_size;
+                        } else {
+                            currentTotal += last_chunk_size;
+                        }
+                    } else {
+                        currentTotal += chunk_size;
+                    }
+                    
+                }                
 
             } else {
+                UInt64 remain = fr.data_fork.size_in_bytes;
+                std::vector<Byte> buf(COPY_BLOCK_SIZE);  //some random size
+
                 for (const auto& ext : fr.data_fork.extents) {
                     if (ext.extent.length == 0) {
                         break;
@@ -397,22 +553,27 @@ namespace Vdfs {
                     }
 
                     RINOK(InStream_SeekSet(_inStream, offset));
-                    std::vector<Byte> buf((size_t)to_read);
 
-                    RINOK(ReadStream_FALSE(_inStream, buf.data(), (UInt32)to_read));
+                    while (to_read > 0) {
+                        const size_t chunk = (size_t)std::min<UInt64>(to_read, COPY_BLOCK_SIZE);
+                        RINOK(ReadStream_FALSE(_inStream, buf.data(), (UInt32)chunk));
 
-                    UInt32 written = 0;
-                    RINOK(outStream->Write(buf.data(), buf.size(), &written));
+                        UInt32 written = 0;
+                        RINOK(outStream->Write(buf.data(), (UInt32)chunk, &written));
+                        if (written != chunk) {
+                            return S_FALSE; //did not write all data
+                        }
 
-                    written_total += written;
-                    if (written != buf.size()) {
-                        ok = false;
-                    }
-                    remain -= written;
+                        to_read -= chunk;
+                        remain  -= chunk;
+                        currentTotal += chunk;
+
+                        RINOK(extractCallback->SetCompleted(&currentTotal));
+                    }   
                 }
 
             }
-            currentTotal += file_size;
+
             RINOK(extractCallback->SetOperationResult(
                 ok ? NArchive::NExtract::NOperationResult::kOK
                     : NArchive::NExtract::NOperationResult::kDataError));
@@ -463,9 +624,22 @@ namespace Vdfs {
                 prop = (inode.kind == VDFS4_CATALOG_FOLDER_RECORD);
                 break;
             case kpidSize:
-                prop = (inode.kind == VDFS4_CATALOG_FILE_RECORD)
-                   ? inode.file_record.data_fork.size_in_bytes
-                   : 0; 
+                if (inode.kind == VDFS4_CATALOG_FILE_RECORD) {
+                    if (common.flags & VDFS4_COMPRESSED_FILE) {
+                        prop = item.unpacked_size;
+                    } else {
+                        prop = inode.file_record.data_fork.size_in_bytes;
+                    }
+                } else {
+                    prop = (UInt64)0;
+                }
+                break;
+            case kpidPackSize:
+                if (inode.kind == VDFS4_CATALOG_FILE_RECORD) {
+                    prop = inode.file_record.data_fork.total_blocks_count * _block_size;
+                } else {
+                    prop = (UInt64)0;
+                }
                 break;
             case kpidGroupId:
                 prop = common.gid;
